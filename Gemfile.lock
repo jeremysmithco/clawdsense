@@ -1,0 +1,46 @@
+PATH
+  remote: .
+  specs:
+    clawdsense (0.1.0)
+      typesense (>= 5.0.0)
+
+GEM
+  remote: https://rubygems.org/
+  specs:
+    base64 (0.2.0)
+    faraday (2.14.0)
+      faraday-net_http (>= 2.0, < 3.5)
+      json
+      logger
+    faraday-net_http (3.4.2)
+      net-http (~> 0.5)
+    json (2.18.1)
+    logger (1.7.0)
+    net-http (0.9.1)
+      uri (>= 0.11.1)
+    typesense (5.0.0)
+      base64 (~> 0.2.0)
+      faraday (~> 2.8)
+      json (~> 2.9)
+    uri (1.1.1)
+
+PLATFORMS
+  arm64-darwin-22
+  ruby
+
+DEPENDENCIES
+  clawdsense!
+
+CHECKSUMS
+  base64 (0.2.0) sha256=0f25e9b21a02a0cc0cea8ef92b2041035d39350946e8789c562b2d1a3da01507
+  clawdsense (0.1.0)
+  faraday (2.14.0) sha256=8699cfe5d97e55268f2596f9a9d5a43736808a943714e3d9a53e6110593941cd
+  faraday-net_http (3.4.2) sha256=f147758260d3526939bf57ecf911682f94926a3666502e24c69992765875906c
+  json (2.18.1) sha256=fe112755501b8d0466b5ada6cf50c8c3f41e897fa128ac5d263ec09eedc9f986
+  logger (1.7.0) sha256=196edec7cc44b66cfb40f9755ce11b392f21f7967696af15d274dde7edff0203
+  net-http (0.9.1) sha256=25ba0b67c63e89df626ed8fac771d0ad24ad151a858af2cc8e6a716ca4336996
+  typesense (5.0.0) sha256=acce2facffe0585f5897eeab1aaa6aaa6f2dcf560a73c87a9a1b4a3e4045069e
+  uri (1.1.1) sha256=379fa58d27ffb1387eaada68c749d1426738bd0f654d812fcc07e7568f5c57c6
+
+BUNDLED WITH
+  4.0.5
