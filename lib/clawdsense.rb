@@ -8,5 +8,5 @@ require_relative "clawdsense/formatter"
 require_relative "clawdsense/cli"
 
 module Clawdsense
-  VERSION = "0.1.0"
+  VERSION = "0.1.1"
 end

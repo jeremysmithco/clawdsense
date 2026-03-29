@@ -1,199 +1,185 @@
 # frozen_string_literal: true
 
 require "time"
+require "io/console"
 
 module Clawdsense
   class Formatter
     BOLD = "\e[1m"
     DIM = "\e[2m"
-    CYAN = "\e[36m"
-    GREEN = "\e[32m"
     YELLOW = "\e[33m"
+    CYAN = "\e[36m"
     RESET = "\e[0m"
 
+    MAX_CONTENT_LENGTH = 240
+
+    def initialize
+      @width = (IO.console&.winsize&.[](1) || 80).clamp(40, 90)
+    end
+
     def format_search_results(results)
-      grouped = results["grouped_hits"]
-      if grouped
-        format_grouped_results(grouped, results["found"])
-      else
-        format_flat_results(results["hits"], results["found"])
+      groups = results["grouped_hits"] || []
+      return "No results found.\n" if groups.empty?
+
+      found = results["found"]
+      session_count = groups.size
+      lines = ["#{BOLD}#{session_count} sessions#{RESET} (#{found} matching entries)"]
+
+      groups.each_with_index do |group, i|
+        lines << format_group(group, i)
       end
-    end
 
-    def format_session_list(results)
-      grouped = results["grouped_hits"] || []
-      return "No sessions found.\n" if grouped.empty?
-
-      lines = []
-      grouped.each do |group|
-        doc = group["hits"].first&.dig("document")
-        next unless doc
-        lines << format_session_summary(doc)
-      end
-      lines.join("\n")
-    end
-
-    def format_session_detail(results)
-      hits = results["hits"] || []
-      return "No turns found for this session.\n" if hits.empty?
-
-      first = hits.first["document"]
-      lines = [session_header(first), ""]
-
-      hits.each do |hit|
-        doc = hit["document"]
-        lines << format_turn_detail(doc)
-      end
-      lines.join("\n")
-    end
-
-    def format_stats(collection_info)
-      lines = [
-        "#{BOLD}Clawdsense Stats#{RESET}",
-        "",
-        "  Documents:  #{collection_info["num_documents"]}",
-        "  Fields:     #{collection_info["fields"]&.size}",
-        "  Collection: #{collection_info["name"]}",
-        ""
-      ]
-      lines.join("\n")
+      lines.join("\n\n")
     end
 
     private
 
-    def format_grouped_results(grouped, total_found)
-      return "No results found.\n" if grouped.empty?
+    def format_group(group, index)
+      hits = group["hits"]
+      matches = group["found"] || hits.size
+      lines = [session_header(hits.first["document"], index, matches)]
 
-      session_count = grouped.size
-      turn_count = grouped.sum { |g| g["hits"].size }
-
-      lines = ["", " #{BOLD}#{session_count} sessions, #{turn_count} turns matched#{RESET} (#{total_found} total)", ""]
-
-      grouped.each do |group|
-        hits = group["hits"]
-        first_doc = hits.first["document"]
-        lines << session_header(first_doc)
-        lines << ""
-
-        hits.each do |hit|
-          doc = hit["document"]
-          lines << format_turn_hit(hit)
-        end
-        lines << ""
+      chronological_entries(hits).each do |entry|
+        lines << format_entry(entry[:doc], highlight: !entry[:hit].nil?, hit: entry[:hit])
       end
-      lines.join("\n")
+
+      lines.join("\n\n")
     end
 
-    def format_flat_results(hits, total_found)
-      return "No results found.\n" if hits.nil? || hits.empty?
-
-      lines = ["", " #{BOLD}#{hits.size} turns matched#{RESET} (#{total_found} total)", ""]
-
+    def chronological_entries(hits)
+      by_id = {}
       hits.each do |hit|
-        lines << format_turn_hit(hit)
+        doc = hit["document"]
+        by_id[hit["prev"]["id"]] ||= {doc: hit["prev"], hit: nil} if hit["prev"]
+        by_id[doc["id"]] = {doc: doc, hit: hit}
+        by_id[hit["next"]["id"]] ||= {doc: hit["next"], hit: nil} if hit["next"]
       end
+      by_id.values.sort_by { |e| e[:doc]["timestamp"] || 0 }
+    end
+
+    def session_header(doc, index, matches)
+      sid = doc["session_id"]
+      cwd = doc["cwd"]
+      timestamp = doc["timestamp"]
+      relative = relative_time(timestamp)
+      absolute = format_time(timestamp)
+
+      lines = [separator]
+      lines << "#{CYAN}#{BOLD}#{index+1}. #{sid}#{RESET}"
+      lines << "#{CYAN}#{DIM}#{cwd}#{RESET}"
+      lines << "#{BOLD}#{relative}#{RESET}  #{DIM}#{absolute}#{RESET}  #{YELLOW}#{matches} #{matches == 1 ? "match" : "matches"}#{RESET}"
+      lines << separator
       lines.join("\n")
     end
 
-    def session_header(doc)
-      slug = doc["slug"]
-      sid = doc["session_id"]
-      summary = doc["summary"]
-      date = format_time(doc["timestamp"])
-      branch = doc["git_branch"]
-      model = doc["model"]
-
-      header = "#{CYAN}--- #{slug || sid[0..7]}#{RESET} #{DIM}#{sid}#{RESET}"
-      header += "\n #{summary}" if summary
-      header += "\n #{DIM}#{date}#{RESET}"
-      parts = []
-      parts << "branch: #{branch}" if branch
-      parts << "model: #{model}" if model
-      header += "  #{DIM}#{parts.join("  ")}#{RESET}" if parts.any?
-      header
+    def separator
+      "#{DIM}#{"─" * @width}#{RESET}"
     end
 
-    def format_turn_hit(hit)
-      doc = hit["document"]
-      turn_num = doc["turn_number"]
-      prompt = truncate(doc["user_prompt"], 120)
-      tools = doc["tools_used"] || []
-      files = doc["files_modified"] || []
+    def format_entry(entry, highlight: false, hit: nil)
+      role = entry["role"]
+      content = (entry["content"] || "").strip
+      prefix = (role == "user") ? "❯" : "⏺"
 
-      line = " #{YELLOW}Turn #{turn_num}:#{RESET} \"#{prompt}\""
-
-      # Show highlight snippet when match is in assistant_text (not visible in prompt)
-      snippet = assistant_highlight(hit)
-      line += "\n   #{DIM}=> ...#{render_highlight(snippet)}...#{RESET}" if snippet
-
-      details = []
-      details << "Tools: #{tools.join(", ")}" if tools.any?
-      details << "Files: #{files.map { |f| File.basename(f) }.uniq.join(", ")}" if files.any?
-      line += "\n   #{DIM}-> #{details.join("  ")}#{RESET}" if details.any?
-      line
-    end
-
-    def format_turn_detail(doc)
-      turn_num = doc["turn_number"]
-      prompt = doc["user_prompt"]
-      assistant = doc["assistant_text"]
-      tools = doc["tools_used"] || []
-      duration = doc["duration_ms"]
-
-      lines = []
-      lines << "#{YELLOW}--- Turn #{turn_num} ---#{RESET}"
-      lines << "#{BOLD}User:#{RESET} #{prompt}"
-
-      if assistant && !assistant.empty?
-        lines << "#{BOLD}Assistant:#{RESET} #{truncate(assistant, 500)}"
+      if highlight && hit
+        snippet = highlighted_snippet(hit, content)
+      else
+        snippet = truncate(content, MAX_CONTENT_LENGTH)
       end
 
-      meta = []
-      meta << "tools: #{tools.join(", ")}" if tools.any?
-      meta << "duration: #{(duration / 1000.0).round(1)}s" if duration
-      lines << "#{DIM}#{meta.join("  ")}#{RESET}" if meta.any?
-      lines << ""
-      lines.join("\n")
+      snippet = word_wrap(snippet, @width - 2)
+      snippet = render_marks(snippet) if highlight
+
+      formatted_lines = snippet.lines.map.with_index do |line, i|
+        pad = (i == 0) ? "#{prefix} " : "  "
+        body = "#{pad}#{line.chomp}"
+        highlight ? body : "#{DIM}#{body}#{RESET}"
+      end
+
+      formatted_lines.join("\n")
     end
 
-    def format_session_summary(doc)
-      slug = doc["slug"]
-      summary = doc["summary"]
-      project = doc["project"]
-      date = format_time(doc["timestamp"])
-      sid = doc["session_id"]
-
-      line = "  #{CYAN}#{slug || sid[0..7]}#{RESET} #{DIM}#{sid}#{RESET}"
-      line += "\n    #{summary}" if summary
-      line += "\n    #{DIM}#{project}  #{date}#{RESET}"
-      line
-    end
-
-    def assistant_highlight(hit)
+    def highlighted_snippet(hit, content)
       highlights = hit["highlights"] || []
-      match = highlights.find { |h| h["field"] == "assistant_text" }
-      return nil unless match
+      match = highlights.find { |h| h["field"] == "content" }
+      snippet = match&.dig("snippet")
+      return truncate(content, MAX_CONTENT_LENGTH) unless snippet
 
-      snippet = match["snippet"]
-      return nil unless snippet && !snippet.empty?
-
-      truncate(snippet, 150)
+      plain = snippet.gsub("<mark>", "").gsub("</mark>", "")
+      prefix = content.start_with?(plain) ? "" : "..."
+      suffix = content.end_with?(plain) ? "" : "..."
+      "#{prefix}#{snippet}#{suffix}"
     end
 
-    # Convert <mark>...</mark> to bold terminal highlighting
-    def render_highlight(text)
-      return "" unless text
-      text.gsub("<mark>", "\e[1;33m").gsub("</mark>", "\e[0;2m")
+    def render_marks(text)
+      in_mark = false
+      text.split("\n").map do |line|
+        line = "<mark>" + line if in_mark
+        opens = line.scan("<mark>").size
+        closes = line.scan("</mark>").size
+
+        if opens > closes
+          line += "</mark>"
+          in_mark = true
+        else
+          in_mark = false
+        end
+
+        line.gsub("<mark>", YELLOW).gsub("</mark>", RESET)
+      end.join("\n")
+    end
+
+    def relative_time(epoch)
+      return "unknown" unless epoch.is_a?(Integer) && epoch > 0
+
+      seconds = Time.now.to_i - epoch
+      return "just now" if seconds < 60
+
+      minutes = seconds / 60
+      return "#{minutes}m ago" if minutes < 60
+
+      hours = minutes / 60
+      return "#{hours}h ago" if hours < 24
+
+      days = hours / 24
+      return "#{days}d ago" if days < 30
+
+      months = days / 30
+      return "#{months}mo ago" if months < 12
+
+      years = days / 365
+      "#{years}y ago"
     end
 
     def format_time(epoch)
-      return "unknown" unless epoch.is_a?(Integer) && epoch > 0
+      return "" unless epoch.is_a?(Integer) && epoch > 0
       Time.at(epoch).strftime("%Y-%m-%d %H:%M")
     end
 
     def truncate(str, max)
       return "" unless str
-      str.length > max ? "#{str[0..max]}..." : str
+      str.length > max ? "#{str[0, max]}..." : str
+    end
+
+    def word_wrap(text, width)
+      text.split("\n").flat_map { |line| wrap_line(line, width) }.join("\n")
+    end
+
+    def wrap_line(line, width)
+      return [line] if line.length <= width
+
+      result = []
+      current = ""
+      line.split(/(\s+)/).each do |part|
+        if (current + part).length > width && !current.empty?
+          result << current.rstrip
+          current = part.lstrip
+        else
+          current += part
+        end
+      end
+      result << current.rstrip unless current.empty?
+      result
     end
   end
 end

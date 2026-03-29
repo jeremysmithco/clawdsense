@@ -2,7 +2,7 @@
 
 Gem::Specification.new do |spec|
   spec.name = "clawdsense"
-  spec.version = "0.1.0"
+  spec.version = "0.1.1"
   spec.authors = ["Jeremy Smith"]
   spec.summary = "Search across all your Claude Code sessions locally"
   spec.description = "CLI tool that indexes Claude Code session transcripts into Typesense for fast keyword and semantic search."
