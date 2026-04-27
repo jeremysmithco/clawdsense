@@ -6,126 +6,71 @@ module Clawdsense
       @client = Config.client
     end
 
-    # Hybrid keyword + semantic search (default)
-    def hybrid(query, **opts)
-      search(query, mode: :hybrid, **opts)
-    end
-
-    # Keyword-only search
-    def keyword(query, **opts)
-      search(query, mode: :keyword, **opts)
-    end
-
-    # Semantic-only search
-    def semantic(query, **opts)
-      search(query, mode: :semantic, **opts)
-    end
-
-    # Show all turns for a session (supports prefix matching)
-    def session_turns(session_id)
-      full_id = resolve_session_id(session_id)
-      unless full_id
-        return {"hits" => [], "found" => 0, "error" => "No session found matching '#{session_id}'"}
-      end
-
-      @client.collections[Config::COLLECTION_NAME].documents.search(
-        q: "*",
-        query_by: "user_prompt",
-        filter_by: "session_id:=#{full_id}",
-        sort_by: "turn_number:asc",
-        per_page: 250,
-        exclude_fields: "embedding"
-      )
-    end
-
-    # Resolve a short prefix to a full session ID
-    def resolve_session_id(prefix)
-      result = @client.collections[Config::COLLECTION_NAME].documents.search(
-        q: "*",
-        query_by: "user_prompt",
-        filter_by: "session_id:=#{prefix}",
-        per_page: 1,
-        include_fields: "session_id"
-      )
-      return prefix if result["found"] > 0
-
-      # Try prefix match by faceting
-      result = @client.collections[Config::COLLECTION_NAME].documents.search(
-        q: "*",
-        query_by: "user_prompt",
-        facet_by: "session_id",
-        max_facet_values: 250,
-        per_page: 0
-      )
-      facets = result.dig("facet_counts", 0, "counts") || []
-      matches = facets.select { |f| f["value"].start_with?(prefix) }
-
-      case matches.size
-      when 1 then matches.first["value"]
-      when 0 then nil
-      else
-        $stderr.puts "Ambiguous prefix '#{prefix}', matches #{matches.size} sessions:"
-        matches.first(5).each { |m| $stderr.puts "  #{m["value"]}" }
-        nil
-      end
-    end
-
-    # List recent sessions (grouped)
-    def list_sessions(project: nil, per_page: 20)
+    def search(query, project: nil)
       params = {
-        q: "*",
-        query_by: "user_prompt",
+        q: query,
+        query_by: "content",
+        per_page: 100,
+        sort_by: "_text_match:desc,timestamp:desc",
         group_by: "session_id",
-        group_limit: 1,
-        sort_by: "timestamp:desc",
-        per_page: per_page,
-        exclude_fields: "embedding,thinking"
+        group_limit: 3
       }
-      params[:filter_by] = "project:=#{project}" if project
-      @client.collections[Config::COLLECTION_NAME].documents.search(params)
+
+      params[:filter_by] = "cwd:/.*#{Regexp.escape(project)}.*/" if project
+
+      result = @client.collections[Config::COLLECTION_NAME].documents.search(params)
+      attach_neighbors!(result)
+      result
     end
 
-    # Collection stats
-    def stats
-      @client.collections[Config::COLLECTION_NAME].retrieve
+    def session_cwd(session_id)
+      result = @client.collections[Config::COLLECTION_NAME].documents.search(
+        q: "*",
+        query_by: "content",
+        filter_by: "session_id:=#{session_id}",
+        per_page: 1,
+        include_fields: "cwd"
+      )
+
+      return nil if result["found"] == 0
+
+      result.dig("hits", 0, "document", "cwd")
     end
 
     private
 
-    def search(query, mode:, project: nil, branch: nil, file: nil, session_id: nil, group_by_session: true, per_page: 10)
-      params = {per_page: per_page, exclude_fields: "embedding,thinking"}
+    def attach_neighbors!(result)
+      hits = all_hits(result)
+      ids = hits.flat_map { |hit| [hit["document"]["prev_id"], hit["document"]["next_id"]] }.compact.uniq
+      return if ids.empty?
 
-      case mode
-      when :hybrid
-        params[:q] = query
-        params[:query_by] = "user_prompt,assistant_text,embedding"
-        params[:vector_query] = "embedding:([], k:20, alpha:0.3)"
-      when :keyword
-        params[:q] = query
-        params[:query_by] = "user_prompt,assistant_text"
-      when :semantic
-        params[:q] = query
-        params[:query_by] = "embedding"
-        params[:vector_query] = "embedding:([], k:20, distance_threshold:0.5)"
+      neighbors = fetch_by_id(ids)
+
+      hits.each do |hit|
+        doc = hit["document"]
+        hit["prev"] = neighbors[doc["prev_id"]] if doc["prev_id"]
+        hit["next"] = neighbors[doc["next_id"]] if doc["next_id"]
       end
+    end
 
-      # Filters
-      filters = []
-      filters << "project:=#{project}" if project
-      filters << "git_branch:=#{branch}" if branch
-      filters << "files_modified:=#{file}" if file
-      filters << "session_id:=#{session_id}" if session_id
-      params[:filter_by] = filters.join(" && ") if filters.any?
+    def all_hits(result)
+      (result["grouped_hits"] || []).flat_map { |group| group["hits"] }
+    end
 
-      # Grouping
-      if group_by_session && !session_id
-        params[:group_by] = "session_id"
-        params[:group_limit] = 3
-      end
+    def fetch_by_id(ids)
+      ids.each_slice(50).flat_map { |batch| fetch_batch(batch) }
+         .to_h { |doc| [doc["id"], doc] }
+    end
 
-      params[:sort_by] = "timestamp:desc" unless mode == :semantic
-
-      @client.collections[Config::COLLECTION_NAME].documents.search(params)
+    def fetch_batch(ids)
+      result = @client.collections[Config::COLLECTION_NAME].documents.search(
+        q: "*",
+        query_by: "content",
+        filter_by: "id:[#{ids.join(",")}]",
+        per_page: ids.size,
+        include_fields: "id,role,content,timestamp,prev_id"
+      )
+      (result["hits"] || []).map { |hit| hit["document"] }
     end
   end
 end
